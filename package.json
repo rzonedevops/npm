@@ -1,0 +1,33 @@
+{
+  "name": "@rzonedevops/npm-package-action-example",
+  "version": "1.0.0",
+  "description": "Example package to demonstrate the npm packaging GitHub Action",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Example test passed\" && exit 0",
+    "lint": "echo \"Example linting passed\" && exit 0",
+    "build": "echo \"Example build completed\" && exit 0"
+  },
+  "keywords": [
+    "github-actions",
+    "npm",
+    "packaging",
+    "ci-cd",
+    "automation"
+  ],
+  "author": "rzonedevops",
+  "license": "MIT",
+  "files": [
+    "index.js",
+    "README.md",
+    "GITHUB_ACTION_README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rzonedevops/npm.git"
+  },
+  "bugs": {
+    "url": "https://github.com/rzonedevops/npm/issues"
+  },
+  "homepage": "https://github.com/rzonedevops/npm#readme"
+}
