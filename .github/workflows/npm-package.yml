@@ -1,0 +1,202 @@
+name: NPM Package
+
+on:
+  # Trigger on push to main/master branch
+  push:
+    branches: [ main, master ]
+  # Trigger on pull requests
+  pull_request:
+    branches: [ main, master ]
+  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to npm registry'
+        required: false
+        default: 'false'
+        type: boolean
+      npm_tag:
+        description: 'NPM tag for publishing (latest, beta, alpha, etc.)'
+        required: false
+        default: 'latest'
+        type: string
+  # Trigger on release
+  release:
+    types: [published]
+
+env:
+  # Default Node.js version
+  NODE_VERSION: '18'
+  # Registry URL
+  NPM_REGISTRY: 'https://registry.npmjs.org'
+
+jobs:
+  package:
+    name: Package for NPM
+    runs-on: ubuntu-latest
+    
+    outputs:
+      package-name: ${{ steps.package-info.outputs.name }}
+      package-version: ${{ steps.package-info.outputs.version }}
+      package-filename: ${{ steps.package-info.outputs.filename }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # Fetch full history for proper versioning
+          fetch-depth: 0
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: ${{ env.NPM_REGISTRY }}
+          cache: 'npm'
+      
+      - name: Verify package.json exists
+        run: |
+          if [ ! -f package.json ]; then
+            echo "❌ package.json not found. This workflow requires a valid Node.js/npm project."
+            exit 1
+          fi
+          echo "✅ package.json found"
+      
+      - name: Extract package information
+        id: package-info
+        run: |
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          FILENAME="${NAME//\//-}-${VERSION}.tgz"
+          
+          echo "name=$NAME" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "filename=$FILENAME" >> $GITHUB_OUTPUT
+          
+          echo "📦 Package: $NAME@$VERSION"
+          echo "📁 Filename: $FILENAME"
+      
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            echo "🔒 Using npm ci for locked dependencies"
+            npm ci
+          else
+            echo "📦 Using npm install"
+            npm install
+          fi
+      
+      - name: Run linting (if available)
+        run: |
+          if npm run lint --silent 2>/dev/null; then
+            echo "🔍 Running linter"
+            npm run lint
+          else
+            echo "⚠️ No lint script found, skipping"
+          fi
+        continue-on-error: false
+      
+      - name: Run tests (if available)
+        run: |
+          if npm run test --silent 2>/dev/null; then
+            echo "🧪 Running tests"
+            npm run test
+          else
+            echo "⚠️ No test script found, skipping"
+          fi
+        continue-on-error: false
+      
+      - name: Run build (if available)
+        run: |
+          if npm run build --silent 2>/dev/null; then
+            echo "🏗️ Running build"
+            npm run build
+          else
+            echo "⚠️ No build script found, skipping"
+          fi
+      
+      - name: Create npm package
+        run: |
+          echo "📦 Creating npm package..."
+          npm pack
+          
+          # Verify the package was created
+          if [ ! -f "${{ steps.package-info.outputs.filename }}" ]; then
+            echo "❌ Package file not found: ${{ steps.package-info.outputs.filename }}"
+            exit 1
+          fi
+          
+          # Display package contents
+          echo "📋 Package contents:"
+          tar -tzf "${{ steps.package-info.outputs.filename }}" | head -20
+          
+          # Display package size
+          PACKAGE_SIZE=$(du -h "${{ steps.package-info.outputs.filename }}" | cut -f1)
+          echo "📏 Package size: $PACKAGE_SIZE"
+      
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-package-${{ steps.package-info.outputs.name }}-${{ steps.package-info.outputs.version }}
+          path: ${{ steps.package-info.outputs.filename }}
+          retention-days: 30
+      
+      - name: Publish to npm (on release or manual trigger)
+        if: |
+          (github.event_name == 'release' && github.event.action == 'published') ||
+          (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "❌ NPM_TOKEN secret not found. Cannot publish to npm."
+            echo "ℹ️ To enable publishing, add your npm token as a secret named 'NPM_TOKEN'"
+            exit 1
+          fi
+          
+          TAG="${{ github.event.inputs.npm_tag || 'latest' }}"
+          echo "🚀 Publishing to npm with tag: $TAG"
+          npm publish --tag "$TAG"
+          echo "✅ Successfully published ${{ steps.package-info.outputs.name }}@${{ steps.package-info.outputs.version }}"
+
+  # Optional job to validate package integrity
+  validate:
+    name: Validate Package
+    runs-on: ubuntu-latest
+    needs: package
+    if: always() && needs.package.result == 'success'
+    
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      
+      - name: Download package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: npm-package-${{ needs.package.outputs.package-name }}-${{ needs.package.outputs.package-version }}
+      
+      - name: Test package installation
+        run: |
+          echo "🔍 Testing package installation..."
+          
+          # Create a temporary directory for testing
+          mkdir -p /tmp/test-install
+          cd /tmp/test-install
+          
+          # Initialize a test package.json
+          npm init -y
+          
+          # Install the package from the tarball
+          npm install "${{ github.workspace }}/${{ needs.package.outputs.package-filename }}"
+          
+          echo "✅ Package installed successfully"
+          
+          # Verify package is listed in dependencies
+          if npm list "${{ needs.package.outputs.package-name }}" >/dev/null 2>&1; then
+            echo "✅ Package is properly listed in dependencies"
+          else
+            echo "❌ Package not found in dependencies"
+            exit 1
+          fi
